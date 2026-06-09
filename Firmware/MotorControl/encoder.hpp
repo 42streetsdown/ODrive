@@ -146,7 +146,6 @@ public:
     uint16_t abs_spi_dma_rx_[1];
     Stm32SpiArbiter::SpiTask spi_task_;
     Stm32SpiArbiter::SpiTask spi_recovery_task_;
-    bool abs_spi_recovery_in_progress_ = false;
 
     constexpr float getCoggingRatio(){
         return 1.0f / 3600.0f;
