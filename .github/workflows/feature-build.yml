@@ -35,7 +35,7 @@ jobs:
           bash -xe ./tup_build.sh
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ODriveFirmware-v3.6-56V
           path: |
