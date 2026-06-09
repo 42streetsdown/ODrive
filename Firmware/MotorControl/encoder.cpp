@@ -495,8 +495,8 @@ void Encoder::sample_now() {
         case MODE_SPI_ABS_RLS:
         case MODE_SPI_ABS_MA732:
         {
+            abs_spi_recovery_attempted_ = false;
             abs_spi_start_transaction();
-            // Do nothing
         } break;
 
         default: {
@@ -573,11 +573,13 @@ void Encoder::abs_spi_cb(bool success) {
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
-                // EF set: data from the errored command is suspect. Send
-                // CLEAR ERROR FLAG (register 0x0001, read cmd = 0x4001) and
-                // re-read angle within the same control cycle. If EF persists
-                // the attempt repeats until the error rate LPF faults the axis.
-                if (Stm32SpiArbiter::acquire_task(&spi_recovery_task_)) {
+                // EF set: data from the errored command is suspect. If we haven't
+                // already attempted recovery this cycle, send CLEAR ERROR FLAG
+                // (register 0x0001, read cmd = 0x4001) and re-read within the same
+                // control cycle. One attempt per cycle prevents ISR starvation when
+                // EF persists; the error rate LPF faults the axis after ~5ms.
+                if (!abs_spi_recovery_attempted_ && Stm32SpiArbiter::acquire_task(&spi_recovery_task_)) {
+                    abs_spi_recovery_attempted_ = true;
                     abs_spi_dma_tx_[0] = 0x4001;
                     spi_recovery_task_.config          = spi_task_.config;
                     spi_recovery_task_.ncs_gpio        = abs_spi_cs_gpio_;
