@@ -495,7 +495,12 @@ void Encoder::sample_now() {
         case MODE_SPI_ABS_RLS:
         case MODE_SPI_ABS_MA732:
         {
-            abs_spi_recovery_attempted_ = false;
+            if (mode_ == MODE_SPI_ABS_AMS) {
+                // For AMS encoders: send CLEAR ERROR FLAG (0x4001) when EF was
+                // detected last cycle, otherwise send the normal read (0xFFFF).
+                abs_spi_dma_tx_[0] = abs_spi_clear_pending_ ? 0x4001 : 0xFFFF;
+                abs_spi_clear_pending_ = false;
+            }
             abs_spi_start_transaction();
         } break;
 
@@ -569,30 +574,27 @@ void Encoder::abs_spi_cb(bool success) {
     switch (mode_) {
         case MODE_SPI_ABS_AMS: {
             uint16_t rawVal = abs_spi_dma_rx_[0];
+            if (abs_spi_dma_tx_[0] == 0x4001) {
+                // We just sent CLEAR ERROR FLAG. This response arrived via the
+                // pipeline from the previous 0xFFFF read — it still has EF set.
+                // The encoder is now processing CLEAR; expect one more discarded
+                // frame (the error register content) before angle data is clean.
+                abs_spi_discard_next_ = true;
+                goto done;
+            }
+            if (abs_spi_discard_next_) {
+                // This is the encoder's response to the CLEAR command. The datasheet
+                // states EF is still set in this frame; discard it.
+                abs_spi_discard_next_ = false;
+                goto done;
+            }
             if (ams_parity(rawVal)) {
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
-                // EF set: data from the errored command is suspect. If we haven't
-                // already attempted recovery this cycle, send CLEAR ERROR FLAG
-                // (register 0x0001, read cmd = 0x4001) and re-read within the same
-                // control cycle. One attempt per cycle prevents ISR starvation when
-                // EF persists; the error rate LPF faults the axis after ~5ms.
-                if (!abs_spi_recovery_attempted_ && Stm32SpiArbiter::acquire_task(&spi_recovery_task_)) {
-                    abs_spi_recovery_attempted_ = true;
-                    abs_spi_dma_tx_[0] = 0x4001;
-                    spi_recovery_task_.config          = spi_task_.config;
-                    spi_recovery_task_.ncs_gpio        = abs_spi_cs_gpio_;
-                    spi_recovery_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
-                    spi_recovery_task_.rx_buf          = (uint8_t*)abs_spi_dma_rx_;
-                    spi_recovery_task_.length          = 1;
-                    spi_recovery_task_.on_complete     = [](void* ctx, bool s) {
-                        ((Encoder*)ctx)->abs_spi_recovery_cb(s);
-                    };
-                    spi_recovery_task_.on_complete_ctx = this;
-                    spi_recovery_task_.next            = nullptr;
-                    spi_arbiter_->transfer_async(&spi_recovery_task_);
-                }
+                // EF latched. Schedule CLEAR on the next sample_now() cycle so no
+                // extra DMA ISR work happens within this control loop iteration.
+                abs_spi_clear_pending_ = true;
                 goto done;
             }
             pos = rawVal & 0x3fff;
@@ -633,15 +635,6 @@ done:
     Stm32SpiArbiter::release_task(&spi_task_);
 }
 
-void Encoder::abs_spi_recovery_cb(bool success) {
-    Stm32SpiArbiter::release_task(&spi_recovery_task_);
-    if (success) {
-        // abs_spi_dma_rx_ holds the error register content; discard it and
-        // re-queue a normal angle read.
-        abs_spi_dma_tx_[0] = 0xFFFF;
-        abs_spi_start_transaction();
-    }
-}
 
 void Encoder::abs_spi_cs_pin_init(){
     // Decode and init cs pin

@@ -135,10 +135,10 @@ public:
 
     bool abs_spi_start_transaction();
     void abs_spi_cb(bool success);
-    void abs_spi_recovery_cb(bool success);
     void abs_spi_cs_pin_init();
     bool abs_spi_pos_updated_ = false;
-    bool abs_spi_recovery_attempted_ = false; // true between EF recovery and next sample_now()
+    bool abs_spi_clear_pending_ = false;  // EF detected; send CLEAR on next sample_now()
+    bool abs_spi_discard_next_ = false;   // discard the CLEAR command's pipelined response
     Mode mode_ = MODE_INCREMENTAL;
     Stm32Gpio abs_spi_cs_gpio_;
     uint32_t abs_spi_cr1;
@@ -146,7 +146,6 @@ public:
     uint16_t abs_spi_dma_tx_[1] = {0xFFFF};
     uint16_t abs_spi_dma_rx_[1];
     Stm32SpiArbiter::SpiTask spi_task_;
-    Stm32SpiArbiter::SpiTask spi_recovery_task_;
 
     constexpr float getCoggingRatio(){
         return 1.0f / 3600.0f;
