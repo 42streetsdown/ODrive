@@ -135,6 +135,7 @@ public:
 
     bool abs_spi_start_transaction();
     void abs_spi_cb(bool success);
+    void abs_spi_recovery_cb(bool success);
     void abs_spi_cs_pin_init();
     bool abs_spi_pos_updated_ = false;
     Mode mode_ = MODE_INCREMENTAL;
@@ -144,6 +145,7 @@ public:
     uint16_t abs_spi_dma_tx_[1] = {0xFFFF};
     uint16_t abs_spi_dma_rx_[1];
     Stm32SpiArbiter::SpiTask spi_task_;
+    Stm32SpiArbiter::SpiTask spi_recovery_task_;
 
     constexpr float getCoggingRatio(){
         return 1.0f / 3600.0f;
