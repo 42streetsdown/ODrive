@@ -569,14 +569,21 @@ void Encoder::abs_spi_cb(bool success) {
     switch (mode_) {
         case MODE_SPI_ABS_AMS: {
             uint16_t rawVal = abs_spi_dma_rx_[0];
+            // Capture and reset the flag: if true this is the post-recovery
+            // re-read, not a fresh sample_now() read.
+            bool was_recovery_reread = abs_spi_recovery_in_progress_;
+            abs_spi_recovery_in_progress_ = false;
+
             if (ams_parity(rawVal)) {
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
-                // EF set: response to the errored command is suspect.
-                // Queue CLEAR ERROR FLAG (register 0x0001, read cmd = 0x4001)
-                // so recovery happens within the same control cycle.
-                if (Stm32SpiArbiter::acquire_task(&spi_recovery_task_)) {
+                // EF set. Only attempt CLEAR+retry once; if EF is still set
+                // on the re-read (was_recovery_reread == true) just discard
+                // and let the error rate LPF handle sustained faults.
+                if (!was_recovery_reread &&
+                        Stm32SpiArbiter::acquire_task(&spi_recovery_task_)) {
+                    abs_spi_recovery_in_progress_ = true;
                     abs_spi_dma_tx_[0] = 0x4001;
                     spi_recovery_task_.config          = spi_task_.config;
                     spi_recovery_task_.ncs_gpio        = abs_spi_cs_gpio_;
@@ -633,9 +640,9 @@ done:
 void Encoder::abs_spi_recovery_cb(bool success) {
     Stm32SpiArbiter::release_task(&spi_recovery_task_);
     if (success) {
-        // abs_spi_dma_rx_ now holds the error register content; discard it.
-        // Re-queue a normal angle read using the primary task so the result
-        // is available for the next encoder.update() call.
+        // abs_spi_dma_rx_ holds the error register content; discard it.
+        // Re-queue an angle read. abs_spi_recovery_in_progress_ is still true
+        // so abs_spi_cb() will not trigger a second recovery if EF persists.
         abs_spi_dma_tx_[0] = 0xFFFF;
         abs_spi_start_transaction();
     }
