@@ -1,0 +1,45 @@
+name: Feature Branch Build
+
+on:
+  push:
+    branches: ['claude/**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi python3 python3-yaml python3-jinja2 python3-jsonschema
+          if ! (apt-cache show tup 2>/dev/null | grep -q "^Package: tup"); then
+            sudo add-apt-repository ppa:jonathonf/tup
+            sudo apt-get update
+          fi
+          sudo apt-get install -y tup
+
+      - name: Build firmware (v3.6-56V)
+        run: |
+          cd Firmware
+          echo "CONFIG_BOARD_VERSION=v3.6-56V" > tup.config
+          echo "CONFIG_DEBUG=false" >> tup.config
+          mkdir -p autogen
+          python3 ../tools/odrive/version.py --output autogen/version.c
+          tup init
+          tup generate ./tup_build.sh
+          bash -xe ./tup_build.sh
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ODriveFirmware-v3.6-56V
+          path: |
+            Firmware/build/ODriveFirmware.elf
+            Firmware/build/ODriveFirmware.bin
+            Firmware/build/ODriveFirmware.hex
+          retention-days: 30
