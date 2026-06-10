@@ -139,6 +139,8 @@ public:
     void abs_spi_cs_pin_init();
     bool abs_spi_pos_updated_ = false;
     bool abs_spi_discard_next_ = false;   // discard error register frame after CLEAR
+    uint32_t abs_spi_parity_error_count_ = 0;
+    uint32_t abs_spi_ef_count_ = 0;
     Mode mode_ = MODE_INCREMENTAL;
     Stm32Gpio abs_spi_cs_gpio_;
     uint32_t abs_spi_cr1;

@@ -574,11 +574,26 @@ void Encoder::abs_spi_cb(bool success) {
                 goto done;
             }
             if (ams_parity(rawVal)) {
+                // Parity error: attempt one same-cycle re-read via spi_clear_task_.
+                abs_spi_parity_error_count_++;
+                if (Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
+                    abs_spi_dma_tx_[0] = 0xFFFF;
+                    spi_clear_task_.config          = spi_task_.config;
+                    spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
+                    spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
+                    spi_clear_task_.rx_buf          = (uint8_t*)abs_spi_dma_rx_;
+                    spi_clear_task_.length          = 1;
+                    spi_clear_task_.on_complete     = [](void* ctx, bool s) { ((Encoder*)ctx)->abs_spi_clear_cb(s); };
+                    spi_clear_task_.on_complete_ctx = this;
+                    spi_clear_task_.next            = nullptr;
+                    spi_arbiter_->transfer_async(&spi_clear_task_);
+                }
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
-                // EF latched. Queue CLEAR + flush 0xFFFF immediately so the
-                // pipeline is clean by the next control cycle.
+                // EF latched: queue CLEAR. MISO on that frame = response to the
+                // previous 0xFFFF = valid angle data (CORDIC is orthogonal to EF).
+                abs_spi_ef_count_++;
                 if (Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
                     abs_spi_dma_tx_[0] = 0x4001;
                     spi_clear_task_.config          = spi_task_.config;
@@ -632,15 +647,27 @@ done:
 }
 
 void Encoder::abs_spi_clear_cb(bool success) {
+    // abs_spi_dma_tx_[0] still holds what we sent (DMA reads but doesn't clear it).
+    bool was_ef_clear = (abs_spi_dma_tx_[0] == 0x4001);
+    uint16_t rawVal = abs_spi_dma_rx_[0];
     Stm32SpiArbiter::release_task(&spi_clear_task_);
-    if (success) {
-        // MISO was the pipelined angle from before EF was detected (discarded).
-        // Send 0xFFFF to flush the error register out of the pipeline.
-        // abs_spi_discard_next_ tells abs_spi_cb() to discard that frame.
+    if (success && !ams_parity(rawVal)) {
+        // MISO = response to the previous 0xFFFF command (SPI pipeline delay):
+        //   parity retry: fresh angle reading
+        //   EF clear: angle with EF=1 latched, but CORDIC output is valid per datasheet
+        pos_abs_ = rawVal & 0x3fff;
+        abs_spi_pos_updated_ = true;
+        if (config_.pre_calibrated) {
+            is_ready_ = true;
+        }
+    }
+    if (success && was_ef_clear) {
+        // Next MISO will be the error register (response to CLEAR); discard it.
         abs_spi_discard_next_ = true;
         abs_spi_dma_tx_[0] = 0xFFFF;
         abs_spi_start_transaction();
     }
+    // Parity retry: no extra flush needed; next sample_now() resumes the pipeline.
 }
 
 void Encoder::abs_spi_cs_pin_init(){
