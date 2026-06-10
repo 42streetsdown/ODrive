@@ -342,8 +342,8 @@ void ODrive::sampling_cb() {
     n_evt_sampling_++;
 
     MEASURE_TIME(task_times_.sampling) {
-        for (auto& axis: axes) {
-            axis.encoder_.sample_now();
+        for (auto it = axes.rbegin(); it != axes.rend(); ++it) {
+            it->encoder_.sample_now();
         }
     }
 }
