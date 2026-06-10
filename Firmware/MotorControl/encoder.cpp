@@ -494,15 +494,8 @@ void Encoder::sample_now() {
         case MODE_SPI_ABS_AEAT:
         case MODE_SPI_ABS_RLS:
         case MODE_SPI_ABS_MA732:
-        {
-            if (mode_ == MODE_SPI_ABS_AMS) {
-                // For AMS encoders: send CLEAR ERROR FLAG (0x4001) when EF was
-                // detected last cycle, otherwise send the normal read (0xFFFF).
-                abs_spi_dma_tx_[0] = abs_spi_clear_pending_ ? 0x4001 : 0xFFFF;
-                abs_spi_clear_pending_ = false;
-            }
             abs_spi_start_transaction();
-        } break;
+            break;
 
         default: {
            set_error(ERROR_UNSUPPORTED_ENCODER_MODE);
@@ -574,17 +567,9 @@ void Encoder::abs_spi_cb(bool success) {
     switch (mode_) {
         case MODE_SPI_ABS_AMS: {
             uint16_t rawVal = abs_spi_dma_rx_[0];
-            if (abs_spi_dma_tx_[0] == 0x4001) {
-                // We just sent CLEAR ERROR FLAG. This response arrived via the
-                // pipeline from the previous 0xFFFF read — it still has EF set.
-                // The encoder is now processing CLEAR; expect one more discarded
-                // frame (the error register content) before angle data is clean.
-                abs_spi_discard_next_ = true;
-                goto done;
-            }
             if (abs_spi_discard_next_) {
-                // This is the encoder's response to the CLEAR command. The datasheet
-                // states EF is still set in this frame; discard it.
+                // Error register frame (response to CLEAR). EF is now cleared
+                // in the encoder; the next cycle will return clean angle data.
                 abs_spi_discard_next_ = false;
                 goto done;
             }
@@ -592,9 +577,20 @@ void Encoder::abs_spi_cb(bool success) {
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
-                // EF latched. Schedule CLEAR on the next sample_now() cycle so no
-                // extra DMA ISR work happens within this control loop iteration.
-                abs_spi_clear_pending_ = true;
+                // EF latched. Queue CLEAR + flush 0xFFFF immediately so the
+                // pipeline is clean by the next control cycle.
+                if (Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
+                    abs_spi_dma_tx_[0] = 0x4001;
+                    spi_clear_task_.config          = spi_task_.config;
+                    spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
+                    spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
+                    spi_clear_task_.rx_buf          = (uint8_t*)abs_spi_dma_rx_;
+                    spi_clear_task_.length          = 1;
+                    spi_clear_task_.on_complete     = [](void* ctx, bool s) { ((Encoder*)ctx)->abs_spi_clear_cb(s); };
+                    spi_clear_task_.on_complete_ctx = this;
+                    spi_clear_task_.next            = nullptr;
+                    spi_arbiter_->transfer_async(&spi_clear_task_);
+                }
                 goto done;
             }
             pos = rawVal & 0x3fff;
@@ -635,6 +631,17 @@ done:
     Stm32SpiArbiter::release_task(&spi_task_);
 }
 
+void Encoder::abs_spi_clear_cb(bool success) {
+    Stm32SpiArbiter::release_task(&spi_clear_task_);
+    if (success) {
+        // MISO was the pipelined angle from before EF was detected (discarded).
+        // Send 0xFFFF to flush the error register out of the pipeline.
+        // abs_spi_discard_next_ tells abs_spi_cb() to discard that frame.
+        abs_spi_discard_next_ = true;
+        abs_spi_dma_tx_[0] = 0xFFFF;
+        abs_spi_start_transaction();
+    }
+}
 
 void Encoder::abs_spi_cs_pin_init(){
     // Decode and init cs pin
