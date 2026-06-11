@@ -571,9 +571,6 @@ void Encoder::abs_spi_cb(bool success) {
             uint16_t rawVal = abs_spi_dma_rx_[0];
             if (ams_parity(rawVal)) {
                 abs_spi_parity_error_count_++;
-#ifdef DEBUG_TIMING
-                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (parity recovery)
-#endif
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
@@ -582,9 +579,6 @@ void Encoder::abs_spi_cb(bool success) {
                 //   F3 TX-only 0xFFFF (flush)        — MISO discarded
                 // Next cycle's F1 MISO = clean angle (response to F3's 0xFFFF).
                 abs_spi_ef_count_++;
-#ifdef DEBUG_TIMING
-                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (EF recovery)
-#endif
                 needs_ef_recovery_ = true;
                 goto done;
             }
