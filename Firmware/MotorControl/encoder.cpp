@@ -573,6 +573,9 @@ void Encoder::abs_spi_cb(bool success) {
             if (ams_parity(rawVal)) {
                 // Parity error: Frame 2 TX+RX 0xFFFF → MISO = fresh angle (response to Frame 1's 0xFFFF).
                 abs_spi_parity_error_count_++;
+#ifdef DEBUG_TIMING
+                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (parity recovery)
+#endif
                 if (!abs_spi_recovery_attempted_ && Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
                     abs_spi_recovery_attempted_ = true;
                     spi_clear_task_.config          = spi_task_.config;
@@ -602,6 +605,9 @@ void Encoder::abs_spi_cb(bool success) {
                 //   F3 TX-only 0xFFFF (flush)        → MISO discarded (ERRFL content, from F2's 0x4001)
                 //   F4 TX+RX   0xFFFF (angle read)   → MISO = clean angle (from F3's 0xFFFF) → abs_spi_cb
                 abs_spi_ef_count_++;
+#ifdef DEBUG_TIMING
+                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (EF recovery)
+#endif
                 if (!abs_spi_recovery_attempted_ && Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
                     abs_spi_recovery_attempted_ = true;
                     abs_spi_dma_tx_[0] = 0x4001;

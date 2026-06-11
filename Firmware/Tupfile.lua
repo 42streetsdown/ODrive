@@ -401,6 +401,10 @@ if tup.getconfig("USE_LTO") == "true" then
     CFLAGS += '-flto'
 end
 
+if tup.getconfig("DEBUG_TIMING") == "true" then
+    CFLAGS += '-DDEBUG_TIMING'
+end
+
 
 -- Generate Tup Rules ----------------------------------------------------------
 

@@ -327,6 +327,14 @@ bool board_init() {
     HAL_NVIC_SetPriority(TIM8_UP_TIM13_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(TIM8_UP_TIM13_IRQn);
 
+#ifdef DEBUG_TIMING
+    // GPIO1=PA0 loop gate, GPIO2=PA1 count-up ref, GPIO3=PA2 recovery trigger, GPIO4=PA3 SPI ISR
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitTypeDef dbg_gpio = {GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_MODE_OUTPUT_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_VERY_HIGH, 0};
+    HAL_GPIO_Init(GPIOA, &dbg_gpio);
+#endif
+
     if (odrv.config_.enable_uart_a) {
         uart_a->Init.BaudRate = odrv.config_.uart_a_baudrate;
         MX_UART4_Init();
@@ -462,6 +470,9 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi == &hspi3) {
+#ifdef DEBUG_TIMING
+        GPIOA->ODR ^= GPIO_PIN_3;  // GPIO4 toggle (SPI ISR)
+#endif
         spi3_arbiter.on_complete();
     }
 }
@@ -497,6 +508,10 @@ void TIM8_UP_TIM13_IRQHandler(void) {
 
     if (!counting_down) {
         TaskTimer::enabled = odrv.task_timers_armed_;
+#ifdef DEBUG_TIMING
+        GPIOA->BSRR = GPIO_PIN_1;           // GPIO2 HIGH (count-up reference pulse)
+        GPIOA->BSRR = GPIO_PIN_1 << 16;    // GPIO2 LOW
+#endif
         // Run sampling handlers and kick off control tasks when TIM8 is
         // counting up.
         odrv.sampling_cb();
@@ -517,6 +532,9 @@ void TIM8_UP_TIM13_IRQHandler(void) {
 
 void ControlLoop_IRQHandler(void) {
     COUNT_IRQ(ControlLoop_IRQn);
+#ifdef DEBUG_TIMING
+    GPIOA->BSRR = GPIO_PIN_0;   // GPIO1 HIGH (control loop start)
+#endif
     uint32_t timestamp = timestamp_;
 
     // Ensure that all the ADCs are done
@@ -565,6 +583,9 @@ void ControlLoop_IRQHandler(void) {
     // If we did everything right, the TIM8 update handler should have been
     // called exactly once between the start of this function and now.
 
+#ifdef DEBUG_TIMING
+    GPIOA->BSRR = GPIO_PIN_0 << 16;  // GPIO1 LOW (control loop end)
+#endif
     if (timestamp_ != timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1)) {
         motors[0].disarm_with_error(Motor::ERROR_CONTROL_DEADLINE_MISSED);
         motors[1].disarm_with_error(Motor::ERROR_CONTROL_DEADLINE_MISSED);
