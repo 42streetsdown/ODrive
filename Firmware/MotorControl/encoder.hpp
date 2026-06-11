@@ -135,10 +135,9 @@ public:
 
     bool abs_spi_start_transaction();
     void abs_spi_cb(bool success);
-    void abs_spi_clear_cb(bool success);
     void abs_spi_cs_pin_init();
     bool abs_spi_pos_updated_ = false;
-    bool abs_spi_discard_next_ = false;   // discard error register frame after CLEAR
+    bool abs_spi_recovery_attempted_ = false;
     uint32_t abs_spi_parity_error_count_ = 0;
     uint32_t abs_spi_ef_count_ = 0;
     Mode mode_ = MODE_INCREMENTAL;
