@@ -569,9 +569,8 @@ void Encoder::abs_spi_cb(bool success) {
     switch (mode_) {
         case MODE_SPI_ABS_AMS: {
             uint16_t rawVal = abs_spi_dma_rx_[0];
-            // check if parity is correct (even) and error flag clear
-            if (ams_parity(rawVal) || ((rawVal >> 14) & 1)) {
-                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle: parity or EF error
+            if (ams_parity(rawVal)) {
+                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle: parity error
                 goto done;
             }
             pos = rawVal & 0x3fff;
