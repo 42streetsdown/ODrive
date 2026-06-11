@@ -378,6 +378,13 @@ bool board_init() {
 }
 
 void start_timers() {
+    // Debug timing: PA0=GPIO1 loop gate, PA1=GPIO2 count-up ref, PA2=GPIO3 error, PA3=GPIO4 SPI ISR
+    // Initialized here (after config apply) so ODrive gpio_mode settings don't override us.
+    GPIO_InitTypeDef dbg_gpio = {GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_MODE_OUTPUT_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_VERY_HIGH, 0};
+    HAL_GPIO_Init(GPIOA, &dbg_gpio);
+    GPIOA->BSRR = (GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3) << 16; // all LOW
+
     CRITICAL_SECTION() {
         // Temporarily disable ADC triggers so they don't trigger as a side
         // effect of starting the timers.
@@ -462,6 +469,7 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi) {
     if (hspi == &hspi3) {
+        GPIOA->ODR ^= GPIO_PIN_3;  // GPIO4 toggle: one per SPI on_complete (2/cycle normal, extras = recovery)
         spi3_arbiter.on_complete();
     }
 }
@@ -497,6 +505,8 @@ void TIM8_UP_TIM13_IRQHandler(void) {
 
     if (!counting_down) {
         TaskTimer::enabled = odrv.task_timers_armed_;
+        GPIOA->BSRR = GPIO_PIN_1;        // GPIO2 HIGH: count-up reference pulse
+        GPIOA->BSRR = GPIO_PIN_1 << 16; // GPIO2 LOW
         // Run sampling handlers and kick off control tasks when TIM8 is
         // counting up.
         odrv.sampling_cb();
@@ -521,6 +531,7 @@ void TIM8_UP_TIM13_IRQHandler(void) {
 
 void ControlLoop_IRQHandler(void) {
     COUNT_IRQ(ControlLoop_IRQn);
+    GPIOA->BSRR = GPIO_PIN_0;  // GPIO1 HIGH: control loop start
     uint32_t timestamp = timestamp_;
 
     // Ensure that all the ADCs are done
@@ -569,6 +580,7 @@ void ControlLoop_IRQHandler(void) {
     // If we did everything right, the TIM8 update handler should have been
     // called exactly once between the start of this function and now.
 
+    GPIOA->BSRR = GPIO_PIN_0 << 16;  // GPIO1 LOW: control loop end (before deadline check)
     if (timestamp_ != timestamp + TIM_1_8_PERIOD_CLOCKS * (TIM_1_8_RCR + 1)) {
         motors[0].disarm_with_error(Motor::ERROR_CONTROL_DEADLINE_MISSED);
         motors[1].disarm_with_error(Motor::ERROR_CONTROL_DEADLINE_MISSED);

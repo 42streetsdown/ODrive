@@ -571,6 +571,7 @@ void Encoder::abs_spi_cb(bool success) {
             uint16_t rawVal = abs_spi_dma_rx_[0];
             if (ams_parity(rawVal)) {
                 abs_spi_parity_error_count_++;
+                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle: parity error
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
@@ -580,6 +581,7 @@ void Encoder::abs_spi_cb(bool success) {
                 // Next cycle's F1 MISO = clean angle (response to F3's 0xFFFF).
                 abs_spi_ef_count_++;
                 needs_ef_recovery_ = true;
+                GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle: EF error
                 goto done;
             }
             pos = rawVal & 0x3fff;
