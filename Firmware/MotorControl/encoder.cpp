@@ -574,9 +574,6 @@ void Encoder::abs_spi_cb(bool success) {
 #ifdef DEBUG_TIMING
                 GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (parity recovery)
 #endif
-                // Defer recovery to count-down half: recovery_cb() queues a fresh
-                // TX+RX angle read during the free window after the control loop.
-                needs_parity_recovery_ = true;
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
@@ -660,28 +657,6 @@ void Encoder::recovery_cb() {
             } else {
                 Stm32SpiArbiter::release_task(&spi_clear_task_);
             }
-        }
-    } else if (needs_parity_recovery_) {
-        if (Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
-            needs_parity_recovery_ = false;
-            spi_clear_task_.config          = spi_task_.config;
-            spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
-            spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
-            spi_clear_task_.rx_buf          = (uint8_t*)abs_spi_dma_rx_;
-            spi_clear_task_.length          = 1;
-            spi_clear_task_.on_complete_ctx = this;
-            spi_clear_task_.on_complete     = [](void* ctx, bool s) {
-                auto* enc = (Encoder*)ctx;
-                uint16_t raw = enc->abs_spi_dma_rx_[0];
-                Stm32SpiArbiter::release_task(&enc->spi_clear_task_);
-                if (s && !ams_parity(raw) && !((raw >> 14) & 1)) {
-                    enc->pos_abs_ = raw & 0x3fff;
-                    enc->abs_spi_pos_updated_ = true;
-                    if (enc->config_.pre_calibrated)
-                        enc->is_ready_ = true;
-                }
-            };
-            spi_arbiter_->transfer_async(&spi_clear_task_);
         }
     }
 }

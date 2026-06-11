@@ -139,7 +139,6 @@ public:
     void abs_spi_cs_pin_init();
     bool abs_spi_pos_updated_ = false;
     bool needs_ef_recovery_ = false;
-    bool needs_parity_recovery_ = false;
     uint32_t abs_spi_parity_error_count_ = 0;
     uint32_t abs_spi_ef_count_ = 0;
     Mode mode_ = MODE_INCREMENTAL;
