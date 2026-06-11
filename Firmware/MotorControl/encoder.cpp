@@ -612,18 +612,26 @@ void Encoder::abs_spi_cb(bool success) {
                     spi_clear_task_.length          = 1;
                     spi_clear_task_.on_complete_ctx = this;
                     spi_clear_task_.on_complete     = [](void* ctx, bool s) {
-                        // F2 done. Restore TX buf and queue F3 (TX-only flush).
+                        // F2 done. Restore TX buf and queue F3 (TX-only flush) via
+                        // spi_flush_task_ — must be a different struct from spi_clear_task_
+                        // to avoid creating a circular list in the SPI arbiter.
                         auto* enc = (Encoder*)ctx;
                         Stm32SpiArbiter::release_task(&enc->spi_clear_task_);
                         enc->abs_spi_dma_tx_[0] = 0xFFFF;
-                        if (s && Stm32SpiArbiter::acquire_task(&enc->spi_clear_task_)) {
-                            enc->spi_clear_task_.on_complete = [](void* ctx2, bool s2) {
+                        if (s && Stm32SpiArbiter::acquire_task(&enc->spi_flush_task_)) {
+                            enc->spi_flush_task_.config          = enc->spi_task_.config;
+                            enc->spi_flush_task_.ncs_gpio        = enc->abs_spi_cs_gpio_;
+                            enc->spi_flush_task_.tx_buf          = (uint8_t*)enc->abs_spi_dma_tx_;
+                            enc->spi_flush_task_.rx_buf          = nullptr;
+                            enc->spi_flush_task_.length          = 1;
+                            enc->spi_flush_task_.on_complete_ctx = enc;
+                            enc->spi_flush_task_.on_complete     = [](void* ctx2, bool s2) {
                                 // F3 done. Queue F4 (normal TX+RX angle read → abs_spi_cb).
                                 auto* enc2 = (Encoder*)ctx2;
-                                Stm32SpiArbiter::release_task(&enc2->spi_clear_task_);
+                                Stm32SpiArbiter::release_task(&enc2->spi_flush_task_);
                                 if (s2) enc2->abs_spi_start_transaction();
                             };
-                            enc->spi_arbiter_->transfer_async(&enc->spi_clear_task_);
+                            enc->spi_arbiter_->transfer_async(&enc->spi_flush_task_);
                         }
                     };
                     spi_arbiter_->transfer_async(&spi_clear_task_);
