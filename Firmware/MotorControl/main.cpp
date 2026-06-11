@@ -348,6 +348,14 @@ void ODrive::sampling_cb() {
     }
 }
 
+void ODrive::recovery_cb() {
+    for (auto& axis: axes) {
+        if (axis.encoder_.mode_ == Encoder::MODE_SPI_ABS_AMS) {
+            axis.encoder_.recovery_cb();
+        }
+    }
+}
+
 /**
  * @brief Runs the periodic control loop.
  * 

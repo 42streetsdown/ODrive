@@ -527,6 +527,10 @@ void TIM8_UP_TIM13_IRQHandler(void) {
         TIM8->CCR2 =
         TIM8->CCR3 =
             TIM_1_8_PERIOD_CLOCKS / 2;
+
+        // Run deferred SPI recovery in the free count-down window so that
+        // recovery DMA ISRs do not preempt the control loop.
+        odrv.recovery_cb();
     }
 }
 

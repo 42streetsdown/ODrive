@@ -188,6 +188,7 @@ public:
 
     void do_fast_checks();
     void sampling_cb();
+    void recovery_cb();
     void control_loop_cb(uint32_t timestamp);
 
     Axis& get_axis(int num) { return axes[num]; }

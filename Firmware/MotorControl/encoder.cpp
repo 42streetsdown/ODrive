@@ -490,7 +490,6 @@ void Encoder::sample_now() {
         } break;
 
         case MODE_SPI_ABS_AMS:
-            abs_spi_recovery_attempted_ = false;
             abs_spi_start_transaction();
             break;
         case MODE_SPI_ABS_CUI:
@@ -571,77 +570,25 @@ void Encoder::abs_spi_cb(bool success) {
         case MODE_SPI_ABS_AMS: {
             uint16_t rawVal = abs_spi_dma_rx_[0];
             if (ams_parity(rawVal)) {
-                // Parity error: Frame 2 TX+RX 0xFFFF → MISO = fresh angle (response to Frame 1's 0xFFFF).
                 abs_spi_parity_error_count_++;
 #ifdef DEBUG_TIMING
                 GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (parity recovery)
 #endif
-                if (!abs_spi_recovery_attempted_ && Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
-                    abs_spi_recovery_attempted_ = true;
-                    spi_clear_task_.config          = spi_task_.config;
-                    spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
-                    spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
-                    spi_clear_task_.rx_buf          = (uint8_t*)abs_spi_dma_rx_;
-                    spi_clear_task_.length          = 1;
-                    spi_clear_task_.on_complete_ctx = this;
-                    spi_clear_task_.on_complete     = [](void* ctx, bool s) {
-                        auto* enc = (Encoder*)ctx;
-                        uint16_t raw = enc->abs_spi_dma_rx_[0];
-                        Stm32SpiArbiter::release_task(&enc->spi_clear_task_);
-                        if (s && !ams_parity(raw) && !((raw >> 14) & 1)) {
-                            enc->pos_abs_ = raw & 0x3fff;
-                            enc->abs_spi_pos_updated_ = true;
-                            if (enc->config_.pre_calibrated)
-                                enc->is_ready_ = true;
-                        }
-                    };
-                    spi_arbiter_->transfer_async(&spi_clear_task_);
-                }
+                // Defer recovery to count-down half: recovery_cb() queues a fresh
+                // TX+RX angle read during the free window after the control loop.
+                needs_parity_recovery_ = true;
                 goto done;
             }
             if ((rawVal >> 14) & 1) {
-                // EF latched. 4-frame recovery:
-                //   F2 TX-only 0x4001 (CLEAR ERRFL) → MISO discarded (angle+EF, from F1's 0xFFFF)
-                //   F3 TX-only 0xFFFF (flush)        → MISO discarded (ERRFL content, from F2's 0x4001)
-                //   F4 TX+RX   0xFFFF (angle read)   → MISO = clean angle (from F3's 0xFFFF) → abs_spi_cb
+                // EF latched. Defer 2-frame recovery to count-down half:
+                //   F2 TX-only 0x4001 (CLEAR ERRFL) — MISO discarded
+                //   F3 TX-only 0xFFFF (flush)        — MISO discarded
+                // Next cycle's F1 MISO = clean angle (response to F3's 0xFFFF).
                 abs_spi_ef_count_++;
 #ifdef DEBUG_TIMING
                 GPIOA->ODR ^= GPIO_PIN_2;  // GPIO3 toggle (EF recovery)
 #endif
-                if (!abs_spi_recovery_attempted_ && Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
-                    abs_spi_recovery_attempted_ = true;
-                    abs_spi_dma_tx_[0] = 0x4001;
-                    spi_clear_task_.config          = spi_task_.config;
-                    spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
-                    spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
-                    spi_clear_task_.rx_buf          = nullptr;
-                    spi_clear_task_.length          = 1;
-                    spi_clear_task_.on_complete_ctx = this;
-                    spi_clear_task_.on_complete     = [](void* ctx, bool s) {
-                        // F2 done. Restore TX buf and queue F3 (TX-only flush) via
-                        // spi_flush_task_ — must be a different struct from spi_clear_task_
-                        // to avoid creating a circular list in the SPI arbiter.
-                        auto* enc = (Encoder*)ctx;
-                        Stm32SpiArbiter::release_task(&enc->spi_clear_task_);
-                        enc->abs_spi_dma_tx_[0] = 0xFFFF;
-                        if (s && Stm32SpiArbiter::acquire_task(&enc->spi_flush_task_)) {
-                            enc->spi_flush_task_.config          = enc->spi_task_.config;
-                            enc->spi_flush_task_.ncs_gpio        = enc->abs_spi_cs_gpio_;
-                            enc->spi_flush_task_.tx_buf          = (uint8_t*)enc->abs_spi_dma_tx_;
-                            enc->spi_flush_task_.rx_buf          = nullptr;
-                            enc->spi_flush_task_.length          = 1;
-                            enc->spi_flush_task_.on_complete_ctx = enc;
-                            enc->spi_flush_task_.on_complete     = [](void* ctx2, bool s2) {
-                                // F3 done. Queue F4 (normal TX+RX angle read → abs_spi_cb).
-                                auto* enc2 = (Encoder*)ctx2;
-                                Stm32SpiArbiter::release_task(&enc2->spi_flush_task_);
-                                if (s2) enc2->abs_spi_start_transaction();
-                            };
-                            enc->spi_arbiter_->transfer_async(&enc->spi_flush_task_);
-                        }
-                    };
-                    spi_arbiter_->transfer_async(&spi_clear_task_);
-                }
+                needs_ef_recovery_ = true;
                 goto done;
             }
             pos = rawVal & 0x3fff;
@@ -680,6 +627,63 @@ void Encoder::abs_spi_cb(bool success) {
 
 done:
     Stm32SpiArbiter::release_task(&spi_task_);
+}
+
+void Encoder::recovery_cb() {
+    if (needs_ef_recovery_) {
+        if (Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
+            if (Stm32SpiArbiter::acquire_task(&spi_flush_task_)) {
+                needs_ef_recovery_ = false;
+                abs_spi_dma_tx_[0] = 0x4001;
+                spi_clear_task_.config          = spi_task_.config;
+                spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
+                spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
+                spi_clear_task_.rx_buf          = nullptr;
+                spi_clear_task_.length          = 1;
+                spi_clear_task_.on_complete_ctx = this;
+                spi_clear_task_.on_complete     = [](void* ctx, bool) {
+                    auto* enc = (Encoder*)ctx;
+                    Stm32SpiArbiter::release_task(&enc->spi_clear_task_);
+                    enc->abs_spi_dma_tx_[0] = 0xFFFF;
+                };
+                spi_flush_task_.config          = spi_task_.config;
+                spi_flush_task_.ncs_gpio        = abs_spi_cs_gpio_;
+                spi_flush_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
+                spi_flush_task_.rx_buf          = nullptr;
+                spi_flush_task_.length          = 1;
+                spi_flush_task_.on_complete_ctx = this;
+                spi_flush_task_.on_complete     = [](void* ctx, bool) {
+                    Stm32SpiArbiter::release_task(&((Encoder*)ctx)->spi_flush_task_);
+                };
+                spi_arbiter_->transfer_async(&spi_clear_task_);
+                spi_arbiter_->transfer_async(&spi_flush_task_);
+            } else {
+                Stm32SpiArbiter::release_task(&spi_clear_task_);
+            }
+        }
+    } else if (needs_parity_recovery_) {
+        if (Stm32SpiArbiter::acquire_task(&spi_clear_task_)) {
+            needs_parity_recovery_ = false;
+            spi_clear_task_.config          = spi_task_.config;
+            spi_clear_task_.ncs_gpio        = abs_spi_cs_gpio_;
+            spi_clear_task_.tx_buf          = (uint8_t*)abs_spi_dma_tx_;
+            spi_clear_task_.rx_buf          = (uint8_t*)abs_spi_dma_rx_;
+            spi_clear_task_.length          = 1;
+            spi_clear_task_.on_complete_ctx = this;
+            spi_clear_task_.on_complete     = [](void* ctx, bool s) {
+                auto* enc = (Encoder*)ctx;
+                uint16_t raw = enc->abs_spi_dma_rx_[0];
+                Stm32SpiArbiter::release_task(&enc->spi_clear_task_);
+                if (s && !ams_parity(raw) && !((raw >> 14) & 1)) {
+                    enc->pos_abs_ = raw & 0x3fff;
+                    enc->abs_spi_pos_updated_ = true;
+                    if (enc->config_.pre_calibrated)
+                        enc->is_ready_ = true;
+                }
+            };
+            spi_arbiter_->transfer_async(&spi_clear_task_);
+        }
+    }
 }
 
 
